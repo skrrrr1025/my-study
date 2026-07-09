@@ -682,17 +682,40 @@ function FlashView({ room, onBack, onResult }) {
 /* ------------------------------------------------------------------ */
 /*  Quiz                                                               */
 /* ------------------------------------------------------------------ */
-function buildQuiz(cards) {
-  return shuffle(cards).map((c) => {
-    const pool = cards.filter((o) => o.id !== c.id && o.back && o.back !== c.back);
-    const seen = new Set([c.back]);
-    const distractors = [];
-    for (const o of shuffle(pool)) {
-      if (!seen.has(o.back)) { seen.add(o.back); distractors.push(o.back); }
-      if (distractors.length >= 3) break;
+function buildQuiz(cards) {/* 정답과 비슷한 오답을 우선 고르기 */
+function pickSmartDistractors(target, pool, need = 3) {
+  const isNum = (s) => /^\d+$/.test(String(s).replace(/[년월일,\s]/g, ""));
+  const num = (s) => parseInt(String(s).replace(/[^\d]/g, ""), 10);
+
+  const scored = pool.map((o) => {
+    let score = 0;
+    // 둘 다 숫자면: 값이 가까울수록 높은 점수 (연도, 수치 문제)
+    if (isNum(target) && isNum(o)) {
+      const d = Math.abs(num(target) - num(o));
+      score += Math.max(0, 100 - d); // 가까울수록 큼
     }
+    // 글자 수가 비슷하면 가점
+    score += Math.max(0, 10 - Math.abs(target.length - o.length));
+    // 앞글자가 같으면 가점 (비슷하게 생긴 답)
+    if (target[0] && o[0] && target[0] === o[0]) score += 5;
+    return { value: o, score: score + Math.random() }; // 약간의 무작위성
+  });
+
+  scored.sort((a, b) => b.score - a.score);
+  return scored.slice(0, need).map((s) => s.value);
+}
+
+function buildQuiz(cards, onlyIds = null) {
+  let pool = cards.filter((c) => c.front);
+  if (onlyIds) pool = pool.filter((c) => onlyIds.includes(c.id)); // 틀린 것만 모드
+
+  return shuffle(pool).map((c) => {
+    const others = cards.filter((o) => o.id !== c.id && o.back && o.back !== c.back).map((o) => o.back);
+    const uniqueOthers = [...new Set(others)];
+    const distractors = pickSmartDistractors(c.back, uniqueOthers, 3);
     return { card: c, options: shuffle([c.back, ...distractors]), mc: distractors.length >= 1 };
   });
+}
 }
 
 function QuizView({ room, onBack, onResult }) {
@@ -710,7 +733,7 @@ function QuizView({ room, onBack, onResult }) {
     return (
       <div className="page">
         <TopBar title="문제 풀기" onBack={onBack} />
-        <div className="empty"><p className="empty-title">문제로 만들 카드가 부족해요</p>
+        <div className="empty"><p className="empty-title">낼 문제가 없어요</p>
           <p className="empty-sub">질문이 있는 카드를 추가해 주세요.</p></div>
       </div>
     );
@@ -735,9 +758,43 @@ function QuizView({ room, onBack, onResult }) {
 
   if (done) {
     const pct = Math.round((score / quiz.length) * 100);
-    return <SessionDone title={pct >= 80 ? "훌륭해요!" : pct >= 50 ? "잘 하고 있어요" : "다시 한 번!"}
-      lines={[`${quiz.length}문제 중 `, `${score}문제`, ` 정답 · ${pct}점`]}
-      color={room.color} onAgain={onBack} againLabel="공부방으로" onBack={onBack} hideBack />;
+    const wrong = Object.entries(results).filter(([, v]) => v.wrong).map(([id]) => id);
+
+    const retryWrong = () => {
+      setWrongIds(wrong);
+      setQuiz(buildQuiz(room.cards, wrong));
+      setI(0); setPicked(null); setRevealed(false);
+      setResults({}); setScore(0); setDone(false);
+    };
+    const retryAll = () => {
+      setWrongIds(null);
+      setQuiz(buildQuiz(room.cards, null));
+      setI(0); setPicked(null); setRevealed(false);
+      setResults({}); setScore(0); setDone(false);
+    };
+
+    return (
+      <div className="page">
+        <div className="done" style={{ background: (PALETTE[room.color] || PALETTE.yellow).soft }}>
+          <div className="done-badge" style={{ background: (PALETTE[room.color] || PALETTE.yellow).mark }}>
+            <Check size={28} strokeWidth={2.5} />
+          </div>
+          <h2 className="done-title">{pct >= 80 ? "훌륭해요!" : pct >= 50 ? "잘 하고 있어요" : "다시 한 번!"}</h2>
+          <p className="done-line">
+            {quiz.length}문제 중 <Highlight color={room.color}><strong>{score}문제</strong></Highlight> 정답 · {pct}점
+          </p>
+          <div className="done-actions">
+            {wrong.length > 0 && (
+              <button className="btn primary" onClick={retryWrong}>
+                <RotateCcw size={16} /> 틀린 {wrong.length}문제만 다시
+              </button>
+            )}
+            <button className="btn ghost" onClick={retryAll}>전체 다시</button>
+            <button className="btn ghost" onClick={onBack}>공부방으로</button>
+          </div>
+        </div>
+      </div>
+    );
   }
 
   return (
