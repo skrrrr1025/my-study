@@ -706,10 +706,12 @@ function pickSmartDistractors(target, pool, need = 3) {
   return scored.slice(0, need).map((s) => s.value);
 }
 
-function buildQuiz(cards, onlyIds = null) {
+function buildQuiz(cards, onlyIds = null, max = null) {
   let pool = cards.filter((c) => c.front);
   if (onlyIds) pool = pool.filter((c) => onlyIds.includes(c.id)); // 틀린 것만 모드
-  return shuffle(pool).map((c) => {
+  pool = shuffle(pool);
+  if (max && max > 0) pool = pool.slice(0, max); // 고른 개수만큼만
+  return pool.map((c) => {
     const others = cards
       .filter((o) => o.id !== c.id && o.back && o.back !== c.back)
       .map((o) => o.back);
@@ -720,7 +722,10 @@ function buildQuiz(cards, onlyIds = null) {
 }
 
 function QuizView({ room, onBack, onResult }) {
-  const [quiz, setQuiz] = useState(() => buildQuiz(room.cards, null));
+  const answerable = room.cards.filter((c) => c.front);
+  const total = answerable.length;
+  const [limit, setLimit] = useState(null); // null=개수 미선택(설정 화면 표시)
+  const [quiz, setQuiz] = useState([]);
   const [i, setI] = useState(0);
   const [picked, setPicked] = useState(null);
   const [revealed, setRevealed] = useState(false);
@@ -730,7 +735,19 @@ function QuizView({ room, onBack, onResult }) {
   const c = PALETTE[room.color] || PALETTE.yellow;
   const q = quiz[i];
 
-  if (!quiz.length) {
+  const start = (n) => {
+    const count = n === "all" ? total : Math.min(n, total);
+    setLimit(count);
+    setQuiz(buildQuiz(room.cards, null, count));
+    setI(0); setPicked(null); setRevealed(false); setResults({}); setScore(0); setDone(false);
+  };
+  const restart = (ids) => {
+    // 틀린 것만=그 세트 전부, 전체 다시=고른 개수 그대로
+    setQuiz(buildQuiz(room.cards, ids, ids ? null : limit));
+    setI(0); setPicked(null); setRevealed(false); setResults({}); setScore(0); setDone(false);
+  };
+
+  if (total === 0) {
     return (
       <div className="page">
         <TopBar title="문제 풀기" onBack={onBack} />
@@ -738,6 +755,11 @@ function QuizView({ room, onBack, onResult }) {
           <p className="empty-sub">질문이 있는 카드를 추가해 주세요.</p></div>
       </div>
     );
+  }
+
+  // 개수 선택 화면
+  if (limit === null) {
+    return <QuizSetup total={total} color={room.color} onBack={onBack} onStart={start} />;
   }
 
   const answer = (opt) => {
@@ -756,12 +778,6 @@ function QuizView({ room, onBack, onResult }) {
     if (i + 1 >= quiz.length) { onResult({ ...results }); setDone(true); }
     else { setI(i + 1); setPicked(null); setRevealed(false); }
   };
-  const restart = (ids) => {
-    setQuiz(buildQuiz(room.cards, ids));
-    setI(0); setPicked(null); setRevealed(false);
-    setResults({}); setScore(0); setDone(false);
-  };
-
   if (done) {
     const pct = Math.round((score / quiz.length) * 100);
     const wrong = Object.entries(results).filter(([, v]) => v.wrong).map(([id]) => id);
@@ -779,7 +795,8 @@ function QuizView({ room, onBack, onResult }) {
                 <RotateCcw size={16} /> 틀린 {wrong.length}문제만 다시
               </button>
             )}
-            <button className="btn ghost" onClick={() => restart(null)}>전체 다시</button>
+            <button className="btn ghost" onClick={() => restart(null)}>다시 풀기</button>
+            <button className="btn ghost" onClick={() => setLimit(null)}>문제 수 바꾸기</button>
             <button className="btn ghost" onClick={onBack}>공부방으로</button>
           </div>
         </div>
@@ -838,6 +855,46 @@ function QuizView({ room, onBack, onResult }) {
           <button className="btn primary grow" onClick={next}>
             {i + 1 >= quiz.length ? "결과 보기" : "다음 문제"} <ChevronRight size={17} />
           </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function QuizSetup({ total, color, onBack, onStart }) {
+  const c = PALETTE[color] || PALETTE.yellow;
+  const presets = [10, 20, 50].filter((n) => n < total); // 전체보다 작은 것만 노출
+  const [showCustom, setShowCustom] = useState(false);
+  const [custom, setCustom] = useState("");
+
+  const startCustom = () => {
+    const n = parseInt(custom, 10);
+    if (!n || n < 1) return;
+    onStart(Math.min(n, total));
+  };
+
+  return (
+    <div className="page">
+      <TopBar title="문제 풀기" onBack={onBack} />
+      <div className="setup-hero" style={{ background: c.soft }}>
+        <p className="setup-lead">몇 문제 풀까요?</p>
+        <p className="setup-sub" style={{ color: c.ink }}>이 방에서 낼 수 있는 문제 {total}개</p>
+      </div>
+      <div className="setup-grid">
+        {presets.map((n) => (
+          <button key={n} className="setup-btn" onClick={() => onStart(n)}>{n}문제</button>
+        ))}
+        <button className="setup-btn" onClick={() => onStart("all")}>전체 {total}문제</button>
+        <button className={"setup-btn" + (showCustom ? " on" : "")} onClick={() => setShowCustom((s) => !s)}>
+          사용자 지정
+        </button>
+      </div>
+      {showCustom && (
+        <div className="setup-custom">
+          <input className="input" type="number" min={1} max={total} value={custom}
+            placeholder={`1 ~ ${total} 사이`} onChange={(e) => setCustom(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && startCustom()} />
+          <button className="btn primary" onClick={startCustom}>시작</button>
         </div>
       )}
     </div>
@@ -1007,6 +1064,15 @@ h1,h2,h3,.brand-mark,.hero-name,.done-title { font-family:'Space Grotesk',sans-s
 .grade.wrong { color:#B23F17; border-color:#FFC2A6; }
 .grade.wrong:hover { background:#FFECE1; }
 
+.setup-hero { border-radius:20px; padding:26px 20px; margin-bottom:18px; text-align:center; }
+.setup-lead { font-family:'Space Grotesk'; font-size:22px; font-weight:700; letter-spacing:-0.02em; }
+.setup-sub { font-size:13.5px; margin-top:8px; font-weight:600; }
+.setup-grid { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
+.setup-btn { background:#fff; border:1.5px solid var(--line); border-radius:14px; padding:18px 12px; font-size:16px; font-weight:600; font-family:'Space Grotesk'; color:var(--ink); cursor:pointer; transition:transform .1s ease, border-color .12s ease; }
+.setup-btn:hover { transform:translateY(-2px); border-color:var(--ink-soft); }
+.setup-btn.on { border-color:var(--ink); }
+.setup-custom { display:flex; gap:10px; margin-top:12px; }
+.setup-custom .input { flex:1; }
 .quiz-progress { height:6px; background:var(--line); border-radius:99px; overflow:hidden; margin:4px 0 20px; }
 .quiz-progress-fill { height:100%; transition:width .3s ease; }
 .quiz-q { background:#fff; border:1px solid var(--line); border-radius:18px; padding:24px 20px; margin-bottom:16px; text-align:center; }
@@ -1036,3 +1102,4 @@ h1,h2,h3,.brand-mark,.hero-name,.done-title { font-family:'Space Grotesk',sans-s
 .warn { display:flex; align-items:center; gap:7px; justify-content:center; font-size:12.5px; color:#8a5a00; background:#FFF8E1; padding:8px; }
 @media (max-width:380px){ .grid { grid-template-columns:1fr; } }
 `;
+ 
