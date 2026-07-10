@@ -1,7 +1,7 @@
 // =====================================================================
 //  src/App.jsx — 외우자 (Firebase 버전)
-//  · 로그인 게이트(Firebase Auth) → 로그인 시 학습 앱 표시
-//  · 데이터는 전부 src/api.js 를 통해 Firestore 와 통신
+//  · 로그인(Firebase Auth) + Firestore 저장 + 공유 라이브러리
+//  · 문제 풀기: 오답 보기를 정답과 비슷하게 + "틀린 것만 다시 풀기"
 // =====================================================================
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import * as XLSX from "xlsx";
@@ -95,7 +95,6 @@ function AuthScreen() {
     try {
       if (mode === "signup") await auth.signUp(email.trim(), pw);
       else await auth.signIn(email.trim(), pw);
-      // 성공하면 onAuthStateChanged 가 화면을 자동 전환
     } catch (e) {
       setErr(translateAuthError(e.code || e.message));
     } finally {
@@ -145,7 +144,7 @@ function AuthScreen() {
 function StudyApp({ email, onSignOut }) {
   const [loading, setLoading] = useState(true);
   const [persistOk, setPersistOk] = useState(true);
-  const [view, setView] = useState("home"); // home | library | editor | room | flash | quiz
+  const [view, setView] = useState("home");
   const [rooms, setRooms] = useState([]);
   const [pubIndex, setPubIndex] = useState([]);
   const [activeId, setActiveId] = useState(null);
@@ -680,23 +679,48 @@ function FlashView({ room, onBack, onResult }) {
 }
 
 /* ------------------------------------------------------------------ */
-/*  Quiz                                                               */
+/*  Quiz — 오답 보기 똑똑하게 + 틀린 것만 다시 풀기                     */
 /* ------------------------------------------------------------------ */
-function buildQuiz(cards) {
-  return shuffle(cards).map((c) => {
-    const pool = cards.filter((o) => o.id !== c.id && o.back && o.back !== c.back);
-    const seen = new Set([c.back]);
-    const distractors = [];
-    for (const o of shuffle(pool)) {
-      if (!seen.has(o.back)) { seen.add(o.back); distractors.push(o.back); }
-      if (distractors.length >= 3) break;
+function pickSmartDistractors(target, pool, need = 3) {
+  const cleanNum = (s) => String(s).replace(/[^\d]/g, "");
+  const isNum = (s) => /\d/.test(String(s)) && /^[\d,\s년월일.]+$/.test(String(s));
+  const num = (s) => parseInt(cleanNum(s), 10);
+  const t = String(target);
+
+  const scored = pool.map((o) => {
+    const os = String(o);
+    let score = Math.random(); // 약간의 무작위성
+    // 둘 다 숫자면 값이 가까울수록 높은 점수 (연도·수치 문제)
+    if (isNum(t) && isNum(os)) {
+      const d = Math.abs(num(t) - num(os));
+      if (!Number.isNaN(d)) score += Math.max(0, 100 - d);
     }
+    // 글자 수가 비슷할수록 가점
+    score += Math.max(0, 10 - Math.abs(t.length - os.length));
+    // 첫 글자가 같으면 가점 (비슷하게 생긴 답)
+    if (t[0] && os[0] && t[0] === os[0]) score += 5;
+    return { value: o, score };
+  });
+
+  scored.sort((a, b) => b.score - a.score);
+  return scored.slice(0, need).map((s) => s.value);
+}
+
+function buildQuiz(cards, onlyIds = null) {
+  let pool = cards.filter((c) => c.front);
+  if (onlyIds) pool = pool.filter((c) => onlyIds.includes(c.id)); // 틀린 것만 모드
+  return shuffle(pool).map((c) => {
+    const others = cards
+      .filter((o) => o.id !== c.id && o.back && o.back !== c.back)
+      .map((o) => o.back);
+    const uniqueOthers = [...new Set(others)];
+    const distractors = pickSmartDistractors(c.back, uniqueOthers, 3);
     return { card: c, options: shuffle([c.back, ...distractors]), mc: distractors.length >= 1 };
   });
 }
 
 function QuizView({ room, onBack, onResult }) {
-  const [quiz] = useState(() => buildQuiz(room.cards.filter((c) => c.front)));
+  const [quiz, setQuiz] = useState(() => buildQuiz(room.cards, null));
   const [i, setI] = useState(0);
   const [picked, setPicked] = useState(null);
   const [revealed, setRevealed] = useState(false);
@@ -710,7 +734,7 @@ function QuizView({ room, onBack, onResult }) {
     return (
       <div className="page">
         <TopBar title="문제 풀기" onBack={onBack} />
-        <div className="empty"><p className="empty-title">문제로 만들 카드가 부족해요</p>
+        <div className="empty"><p className="empty-title">낼 문제가 없어요</p>
           <p className="empty-sub">질문이 있는 카드를 추가해 주세요.</p></div>
       </div>
     );
@@ -732,12 +756,35 @@ function QuizView({ room, onBack, onResult }) {
     if (i + 1 >= quiz.length) { onResult({ ...results }); setDone(true); }
     else { setI(i + 1); setPicked(null); setRevealed(false); }
   };
+  const restart = (ids) => {
+    setQuiz(buildQuiz(room.cards, ids));
+    setI(0); setPicked(null); setRevealed(false);
+    setResults({}); setScore(0); setDone(false);
+  };
 
   if (done) {
     const pct = Math.round((score / quiz.length) * 100);
-    return <SessionDone title={pct >= 80 ? "훌륭해요!" : pct >= 50 ? "잘 하고 있어요" : "다시 한 번!"}
-      lines={[`${quiz.length}문제 중 `, `${score}문제`, ` 정답 · ${pct}점`]}
-      color={room.color} onAgain={onBack} againLabel="공부방으로" onBack={onBack} hideBack />;
+    const wrong = Object.entries(results).filter(([, v]) => v.wrong).map(([id]) => id);
+    return (
+      <div className="page">
+        <div className="done" style={{ background: c.soft }}>
+          <div className="done-badge" style={{ background: c.mark }}><Check size={28} strokeWidth={2.5} /></div>
+          <h2 className="done-title">{pct >= 80 ? "훌륭해요!" : pct >= 50 ? "잘 하고 있어요" : "다시 한 번!"}</h2>
+          <p className="done-line">
+            {quiz.length}문제 중 <Highlight color={room.color}><strong>{score}문제</strong></Highlight> 정답 · {pct}점
+          </p>
+          <div className="done-actions">
+            {wrong.length > 0 && (
+              <button className="btn primary" onClick={() => restart(wrong)}>
+                <RotateCcw size={16} /> 틀린 {wrong.length}문제만 다시
+              </button>
+            )}
+            <button className="btn ghost" onClick={() => restart(null)}>전체 다시</button>
+            <button className="btn ghost" onClick={onBack}>공부방으로</button>
+          </div>
+        </div>
+      </div>
+    );
   }
 
   return (
