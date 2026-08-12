@@ -1,14 +1,17 @@
 // =====================================================================
 //  src/App.jsx — 외우자 (Firebase 버전)
-//  · 로그인(Firebase Auth) + Firestore 저장 + 공유 라이브러리
-//  · 문제 풀기: 오답 보기를 정답과 비슷하게 + "틀린 것만 다시 풀기"
+//  기능: 로그인 · Firestore 저장 · 공유 라이브러리
+//        문제 개수 선택 · 오답 보기 개선 · 틀린 것만 다시
+//        + 다크모드(기기 저장) · 카드 시작화면(순서/섞기) · 책갈피(이어보기)
+//        + 편집 검색 · 틀린 단어 강조 · 틀린 것만 모아보기
 // =====================================================================
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import * as XLSX from "xlsx";
 import {
   Plus, Upload, Shuffle, Check, X, ChevronRight, Trash2, Share2, Library,
   Pencil, RotateCcw, Sparkles, ArrowLeft, FileSpreadsheet, GraduationCap,
-  Layers, Download, Info, LogOut, Mail, Lock,
+  Layers, Download, Info, LogOut, Mail, Lock, Sun, Moon, Bookmark, List,
+  Search,
 } from "lucide-react";
 import {
   auth, getMyRooms, saveMyRooms, listPublic,
@@ -39,18 +42,31 @@ const PALETTE = {
 const COLOR_KEYS = Object.keys(PALETTE);
 
 const isMastered = (s) => s && (s.correct || 0) >= 2 && (s.correct || 0) > (s.wrong || 0);
+const isStruggling = (s) => s && (s.wrong || 0) > 0 && !isMastered(s);
 const masteryOf = (room) => {
   if (!room.cards.length) return 0;
   const stats = room.stats || {};
   const m = room.cards.filter((c) => isMastered(stats[c.id])).length;
   return Math.round((m / room.cards.length) * 100);
 };
+const strugglingCards = (room) => {
+  const stats = room.stats || {};
+  return room.cards.filter((c) => isStruggling(stats[c.id]));
+};
 
 /* ------------------------------------------------------------------ */
-/*  Root: auth gate                                                    */
+/*  Root: auth gate + theme                                            */
 /* ------------------------------------------------------------------ */
 export default function App() {
-  const [user, setUser] = useState(undefined); // undefined=확인 중, null=로그아웃
+  const [user, setUser] = useState(undefined);
+  const [theme, setTheme] = useState(() => {
+    try { return localStorage.getItem("wjmz-theme") || "light"; } catch { return "light"; }
+  });
+  const toggleTheme = () => setTheme((t) => {
+    const nt = t === "dark" ? "light" : "dark";
+    try { localStorage.setItem("wjmz-theme", nt); } catch {}
+    return nt;
+  });
 
   useEffect(() => {
     auth.getSession().then(setUser);
@@ -59,12 +75,20 @@ export default function App() {
   }, []);
 
   if (user === undefined) {
-    return <Shell><div className="center-screen"><div className="pulse">불러오는 중…</div></div></Shell>;
+    return <Shell theme={theme}><div className="center-screen"><div className="pulse">불러오는 중…</div></div></Shell>;
   }
   if (!user) {
-    return <Shell><AuthScreen /></Shell>;
+    return <Shell theme={theme}><AuthScreen theme={theme} onToggleTheme={toggleTheme} /></Shell>;
   }
-  return <StudyApp key={user.uid} email={user.email} onSignOut={() => auth.signOut()} />;
+  return <StudyApp key={user.uid} email={user.email} theme={theme} onToggleTheme={toggleTheme} onSignOut={() => auth.signOut()} />;
+}
+
+function ThemeToggle({ theme, onToggle, className = "" }) {
+  return (
+    <button className={"theme-toggle " + className} onClick={onToggle} aria-label="테마 전환" title="라이트/다크 전환">
+      {theme === "dark" ? <Sun size={16} /> : <Moon size={16} />}
+    </button>
+  );
 }
 
 /* ------------------------------------------------------------------ */
@@ -82,7 +106,7 @@ function translateAuthError(code = "") {
   return "문제가 생겼어요. 잠시 후 다시 시도해 주세요.";
 }
 
-function AuthScreen() {
+function AuthScreen({ theme, onToggleTheme }) {
   const [mode, setMode] = useState("signin");
   const [email, setEmail] = useState("");
   const [pw, setPw] = useState("");
@@ -104,6 +128,7 @@ function AuthScreen() {
 
   return (
     <div className="auth-wrap">
+      <ThemeToggle theme={theme} onToggle={onToggleTheme} className="auth-toggle" />
       <div className="auth-head">
         <span className="brand-mark">외우자</span>
         <p className="auth-lead">엑셀을 암기 카드와 문제로 바꿔주는 공부방</p>
@@ -141,7 +166,7 @@ function AuthScreen() {
 /* ------------------------------------------------------------------ */
 /*  Study app (로그인 후)                                              */
 /* ------------------------------------------------------------------ */
-function StudyApp({ email, onSignOut }) {
+function StudyApp({ email, theme, onToggleTheme, onSignOut }) {
   const [loading, setLoading] = useState(true);
   const [persistOk, setPersistOk] = useState(true);
   const [view, setView] = useState("home");
@@ -202,8 +227,12 @@ function StudyApp({ email, onSignOut }) {
     await persist(next);
   };
 
+  const setBookmark = async (roomId, index) => {
+    await persist(rooms.map((r) => (r.id === roomId ? { ...r, lastIndex: index } : r)));
+  };
+
   const resetProgress = async (roomId) => {
-    await persist(rooms.map((r) => (r.id === roomId ? { ...r, stats: {} } : r)));
+    await persist(rooms.map((r) => (r.id === roomId ? { ...r, stats: {}, lastIndex: 0 } : r)));
     flash("진도를 초기화했어요");
   };
 
@@ -232,7 +261,7 @@ function StudyApp({ email, onSignOut }) {
       subject: pub.subject || "",
       color: pub.color || "sky",
       cards: (pub.cards || []).map((c) => ({ id: uid(), front: c.front, back: c.back })),
-      stats: {}, sharedId: null, updatedAt: Date.now(),
+      stats: {}, sharedId: null, lastIndex: 0, updatedAt: Date.now(),
     };
     await persist([room, ...rooms]);
     setActiveId(room.id);
@@ -251,7 +280,7 @@ function StudyApp({ email, onSignOut }) {
         { id: uid(), front: "3·1 운동", back: "1919년" },
         { id: uid(), front: "8·15 광복", back: "1945년" },
       ],
-      stats: {}, sharedId: null, updatedAt: Date.now(),
+      stats: {}, sharedId: null, lastIndex: 0, updatedAt: Date.now(),
     };
     await persist([demo, ...rooms]);
     setActiveId(demo.id);
@@ -259,16 +288,16 @@ function StudyApp({ email, onSignOut }) {
   };
 
   if (loading) {
-    return <Shell><div className="center-screen"><div className="pulse">불러오는 중…</div></div></Shell>;
+    return <Shell theme={theme}><div className="center-screen"><div className="pulse">불러오는 중…</div></div></Shell>;
   }
 
   return (
-    <Shell>
+    <Shell theme={theme}>
       {toast && <div className="toast">{toast}</div>}
       {!persistOk && <div className="warn"><Info size={14} /> 저장에 실패했어요. 네트워크나 로그인 상태를 확인해 주세요.</div>}
 
       {view === "home" && (
-        <HomeView rooms={rooms} email={email}
+        <HomeView rooms={rooms} email={email} theme={theme} onToggleTheme={onToggleTheme}
           onOpen={openRoom}
           onNew={() => { setActiveId(null); setView("editor"); }}
           onLibrary={() => setView("library")}
@@ -291,7 +320,8 @@ function StudyApp({ email, onSignOut }) {
       )}
       {view === "flash" && activeRoom && (
         <FlashView room={activeRoom} onBack={() => setView("room")}
-          onResult={(res) => updateStats(activeRoom.id, res)} />
+          onResult={(res) => updateStats(activeRoom.id, res)}
+          onBookmark={setBookmark} />
       )}
       {view === "quiz" && activeRoom && (
         <QuizView room={activeRoom} onBack={() => setView("room")}
@@ -304,9 +334,9 @@ function StudyApp({ email, onSignOut }) {
 /* ------------------------------------------------------------------ */
 /*  Shared UI pieces                                                   */
 /* ------------------------------------------------------------------ */
-function Shell({ children }) {
+function Shell({ theme, children }) {
   return (
-    <div className="app-root">
+    <div className={"app-root" + (theme === "dark" ? " dark" : "")}>
       <style>{CSS}</style>
       <div className="app-inner">{children}</div>
     </div>
@@ -343,15 +373,18 @@ function TopBar({ title, onBack, onEdit, right }) {
 /* ------------------------------------------------------------------ */
 /*  Home                                                               */
 /* ------------------------------------------------------------------ */
-function HomeView({ rooms, email, onOpen, onNew, onLibrary, onDemo, onSignOut }) {
+function HomeView({ rooms, email, theme, onToggleTheme, onOpen, onNew, onLibrary, onDemo, onSignOut }) {
   return (
     <div className="page">
       <header className="masthead">
         <div className="masthead-top">
           <span className="brand-mark">외우자</span>
-          <button className="signout" onClick={onSignOut} title={email}>
-            <LogOut size={15} /> 로그아웃
-          </button>
+          <div className="masthead-actions">
+            <ThemeToggle theme={theme} onToggle={onToggleTheme} />
+            <button className="signout" onClick={onSignOut} title={email}>
+              <LogOut size={15} /> 로그아웃
+            </button>
+          </div>
         </div>
         <p className="tagline">
           엑셀을 올리면 <Highlight color="yellow">암기 카드</Highlight>와 <Highlight color="mint">문제</Highlight>로 바꿔주는 공부방
@@ -378,6 +411,7 @@ function HomeView({ rooms, email, onOpen, onNew, onLibrary, onDemo, onSignOut })
           {rooms.map((r) => {
             const c = PALETTE[r.color] || PALETTE.yellow;
             const m = masteryOf(r);
+            const struggling = strugglingCards(r).length;
             return (
               <button key={r.id} className="room-card" onClick={() => onOpen(r.id)}>
                 <div className="room-swatch" style={{ background: c.mark }} />
@@ -386,6 +420,7 @@ function HomeView({ rooms, email, onOpen, onNew, onLibrary, onDemo, onSignOut })
                   <h3 className="room-name">{r.name}</h3>
                   <div className="room-meta">
                     <span>{r.cards.length}장</span><span className="dot">·</span><span>익힘 {m}%</span>
+                    {struggling > 0 && <><span className="dot">·</span><span className="meta-wrong">틀림 {struggling}</span></>}
                     {r.sharedId && <><span className="dot">·</span><Share2 size={12} /></>}
                   </div>
                   <Progress value={m} color={r.color} />
@@ -437,7 +472,7 @@ function LibraryView({ pubIndex, onBack, onClone }) {
 }
 
 /* ------------------------------------------------------------------ */
-/*  Editor (Excel import)                                              */
+/*  Editor (Excel import + 검색 + 틀린 단어 강조)                       */
 /* ------------------------------------------------------------------ */
 function parseFile(file) {
   return new Promise((resolve, reject) => {
@@ -462,10 +497,12 @@ function EditorView({ existing, onCancel, onSave, flash }) {
   const [cards, setCards] = useState(existing?.cards?.map((c) => ({ ...c })) || [{ id: uid(), front: "", back: "" }]);
   const [firstRowIsHeader, setFirstRowIsHeader] = useState(true);
   const [importing, setImporting] = useState(false);
+  const [search, setSearch] = useState("");
   const fileRef = useRef(null);
+  const stats = existing?.stats || {};
 
   const setCard = (id, field, val) => setCards((cs) => cs.map((c) => (c.id === id ? { ...c, [field]: val } : c)));
-  const addCard = () => setCards((cs) => [...cs, { id: uid(), front: "", back: "" }]);
+  const addCard = () => { setSearch(""); setCards((cs) => [...cs, { id: uid(), front: "", back: "" }]); };
   const removeCard = (id) => setCards((cs) => cs.filter((c) => c.id !== id));
 
   const handleFile = async (e) => {
@@ -493,9 +530,15 @@ function EditorView({ existing, onCancel, onSave, flash }) {
     if (!clean.length) { flash("카드를 한 장 이상 만들어주세요"); return; }
     onSave({
       id: existing?.id || uid(), name: name.trim(), subject: subject.trim(), color,
-      cards: clean, stats: existing?.stats || {}, sharedId: existing?.sharedId || null, updatedAt: Date.now(),
+      cards: clean, stats: existing?.stats || {}, sharedId: existing?.sharedId || null,
+      lastIndex: existing?.lastIndex || 0, updatedAt: Date.now(),
     });
   };
+
+  const q = search.trim().toLowerCase();
+  const visible = q
+    ? cards.filter((c) => (c.front + " " + c.back).toLowerCase().includes(q))
+    : cards;
 
   return (
     <div className="page">
@@ -542,18 +585,34 @@ function EditorView({ existing, onCancel, onSave, flash }) {
         <button className="link-btn" onClick={addCard}><Plus size={15} /> 카드 추가</button>
       </div>
 
+      {cards.length > 6 && (
+        <div className="search-field">
+          <Search size={16} />
+          <input className="search-input" value={search} placeholder="카드 검색 (질문·답)"
+            onChange={(e) => setSearch(e.target.value)} />
+          {search && <button className="icon-btn sm" onClick={() => setSearch("")}><X size={15} /></button>}
+        </div>
+      )}
+      {q && <p className="search-count">{visible.length}개 찾음</p>}
+
       <div className="card-list">
-        {cards.map((c, i) => (
-          <div key={c.id} className="edit-card">
-            <span className="edit-idx">{i + 1}</span>
-            <div className="edit-fields">
-              <input className="input flat" value={c.front} placeholder="질문 / 앞면" onChange={(e) => setCard(c.id, "front", e.target.value)} />
-              <div className="edit-divider" />
-              <input className="input flat" value={c.back} placeholder="답 / 뒷면" onChange={(e) => setCard(c.id, "back", e.target.value)} />
+        {visible.map((c) => {
+          const idx = cards.findIndex((x) => x.id === c.id);
+          const s = stats[c.id];
+          const state = isMastered(s) ? " mastered" : (isStruggling(s) ? " wrong" : "");
+          return (
+            <div key={c.id} className={"edit-card" + state}>
+              <span className="edit-idx">{idx + 1}</span>
+              <div className="edit-fields">
+                <input className="input flat" value={c.front} placeholder="질문 / 앞면" onChange={(e) => setCard(c.id, "front", e.target.value)} />
+                <div className="edit-divider" />
+                <input className="input flat" value={c.back} placeholder="답 / 뒷면" onChange={(e) => setCard(c.id, "back", e.target.value)} />
+              </div>
+              <button className="icon-btn" onClick={() => removeCard(c.id)} aria-label="삭제"><X size={16} /></button>
             </div>
-            <button className="icon-btn" onClick={() => removeCard(c.id)} aria-label="삭제"><X size={16} /></button>
-          </div>
-        ))}
+          );
+        })}
+        {visible.length === 0 && <p className="search-count">검색 결과가 없어요.</p>}
       </div>
 
       <div className="sticky-actions">
@@ -616,25 +675,86 @@ function RoomView({ room, onBack, onFlash, onQuiz, onEdit, onDelete, onShare, on
 }
 
 /* ------------------------------------------------------------------ */
-/*  Flashcards                                                         */
+/*  Flashcards — 시작화면(순서/섞기/이어보기/틀린것만) + 책갈피         */
 /* ------------------------------------------------------------------ */
-function FlashView({ room, onBack, onResult }) {
-  const [deck, setDeck] = useState(() => [...room.cards]);
-  const [i, setI] = useState(0);
+function FlashView({ room, onBack, onResult, onBookmark }) {
+  const c = PALETTE[room.color] || PALETTE.yellow;
+  const [config, setConfig] = useState(null);
+  const wrong = strugglingCards(room);
+  const hasBookmark = Number.isInteger(room.lastIndex) && room.lastIndex > 0 && room.lastIndex < room.cards.length;
+
+  if (room.cards.length === 0) {
+    return (
+      <div className="page">
+        <TopBar title="카드 넘기기" onBack={onBack} />
+        <div className="empty"><p className="empty-title">카드가 없어요</p>
+          <p className="empty-sub">편집에서 카드를 추가해 주세요.</p></div>
+      </div>
+    );
+  }
+
+  if (!config) {
+    return (
+      <div className="page">
+        <TopBar title="카드 넘기기" onBack={onBack} />
+        <div className="setup-hero" style={{ background: c.soft }}>
+          <p className="setup-lead">어떻게 볼까요?</p>
+          <p className="setup-sub" style={{ color: c.ink }}>전체 {room.cards.length}장</p>
+        </div>
+        <div className="setup-list">
+          {hasBookmark && (
+            <button className="setup-row" onClick={() => setConfig({ deck: room.cards, start: room.lastIndex, track: true })}>
+              <Bookmark size={18} /><div><strong>이어보기</strong><span>{room.lastIndex + 1}번부터 이어서</span></div>
+            </button>
+          )}
+          <button className="setup-row" onClick={() => setConfig({ deck: room.cards, start: 0, track: true })}>
+            <List size={18} /><div><strong>처음부터</strong><span>1번부터 순서대로</span></div>
+          </button>
+          <button className="setup-row" onClick={() => setConfig({ deck: shuffle(room.cards), start: 0, track: false })}>
+            <Shuffle size={18} /><div><strong>섞어서</strong><span>무작위 순서로</span></div>
+          </button>
+          {wrong.length > 0 && (
+            <button className="setup-row" onClick={() => setConfig({ deck: wrong, start: 0, track: false })}>
+              <X size={18} /><div><strong>틀린 단어만</strong><span>{wrong.length}개 집중 복습</span></div>
+            </button>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <FlashSession room={room} deck={config.deck} startAt={config.start} track={config.track}
+      onExit={onBack} onResult={onResult} onBookmark={onBookmark} />
+  );
+}
+
+function FlashSession({ room, deck, startAt, track, onExit, onResult, onBookmark }) {
+  const [i, setI] = useState(startAt || 0);
   const [flipped, setFlipped] = useState(false);
   const [results, setResults] = useState({});
   const [done, setDone] = useState(false);
   const c = PALETTE[room.color] || PALETTE.yellow;
   const card = deck[i];
 
+  const exit = () => {
+    if (track && !done) onBookmark(room.id, i); // 나갈 때 현재 위치 저장
+    onExit();
+  };
+
   const mark = (known) => {
     const nextRes = { ...results, [card.id]: known ? { correct: 1 } : { wrong: 1 } };
     setResults(nextRes);
-    if (i + 1 >= deck.length) { onResult(nextRes); setDone(true); }
-    else { setI(i + 1); setFlipped(false); }
+    if (i + 1 >= deck.length) {
+      onResult(nextRes);
+      if (track) onBookmark(room.id, 0); // 끝까지 봤으면 책갈피 리셋
+      setDone(true);
+    } else {
+      setI(i + 1); setFlipped(false);
+    }
   };
 
-  const reshuffle = () => { setDeck(shuffle(room.cards)); setI(0); setFlipped(false); setResults({}); setDone(false); };
+  const again = () => { setI(0); setFlipped(false); setResults({}); setDone(false); };
 
   useEffect(() => {
     const onKey = (e) => {
@@ -650,16 +770,15 @@ function FlashView({ room, onBack, onResult }) {
   if (done) {
     const known = Object.values(results).filter((r) => r.correct).length;
     return <SessionDone title="한 바퀴 끝!" lines={[`${deck.length}장 중 `, `${known}장`, ` 익힘 표시`]}
-      color={room.color} onAgain={reshuffle} onBack={onBack} />;
+      color={room.color} onAgain={again} onBack={onExit} />;
   }
 
   return (
     <div className="page study">
-      <TopBar title={`${i + 1} / ${deck.length}`} onBack={onBack}
-        right={<button className="icon-btn" onClick={reshuffle}><Shuffle size={17} /></button>} />
+      <TopBar title={`${i + 1} / ${deck.length}`} onBack={exit} />
       <div className="flash-stage" onClick={() => setFlipped((f) => !f)}>
         <div className={"flashcard" + (flipped ? " flipped" : "")}>
-          <div className="face front" style={{ background: "#fff" }}>
+          <div className="face front">
             <span className="face-tag">질문</span>
             <p className="face-text">{card.front || "—"}</p>
             <span className="tap-hint">눌러서 뒤집기</span>
@@ -679,7 +798,7 @@ function FlashView({ room, onBack, onResult }) {
 }
 
 /* ------------------------------------------------------------------ */
-/*  Quiz — 오답 보기 똑똑하게 + 틀린 것만 다시 풀기                     */
+/*  Quiz — 개수 선택 + 오답 개선 + 틀린 것만                            */
 /* ------------------------------------------------------------------ */
 function pickSmartDistractors(target, pool, need = 3) {
   const cleanNum = (s) => String(s).replace(/[^\d]/g, "");
@@ -689,15 +808,12 @@ function pickSmartDistractors(target, pool, need = 3) {
 
   const scored = pool.map((o) => {
     const os = String(o);
-    let score = Math.random(); // 약간의 무작위성
-    // 둘 다 숫자면 값이 가까울수록 높은 점수 (연도·수치 문제)
+    let score = Math.random();
     if (isNum(t) && isNum(os)) {
       const d = Math.abs(num(t) - num(os));
       if (!Number.isNaN(d)) score += Math.max(0, 100 - d);
     }
-    // 글자 수가 비슷할수록 가점
     score += Math.max(0, 10 - Math.abs(t.length - os.length));
-    // 첫 글자가 같으면 가점 (비슷하게 생긴 답)
     if (t[0] && os[0] && t[0] === os[0]) score += 5;
     return { value: o, score };
   });
@@ -708,9 +824,9 @@ function pickSmartDistractors(target, pool, need = 3) {
 
 function buildQuiz(cards, onlyIds = null, max = null) {
   let pool = cards.filter((c) => c.front);
-  if (onlyIds) pool = pool.filter((c) => onlyIds.includes(c.id)); // 틀린 것만 모드
+  if (onlyIds) pool = pool.filter((c) => onlyIds.includes(c.id));
   pool = shuffle(pool);
-  if (max && max > 0) pool = pool.slice(0, max); // 고른 개수만큼만
+  if (max && max > 0) pool = pool.slice(0, max);
   return pool.map((c) => {
     const others = cards
       .filter((o) => o.id !== c.id && o.back && o.back !== c.back)
@@ -721,10 +837,54 @@ function buildQuiz(cards, onlyIds = null, max = null) {
   });
 }
 
+function QuizSetup({ total, wrongCount, color, onBack, onStart, onStartWrong }) {
+  const c = PALETTE[color] || PALETTE.yellow;
+  const presets = [10, 20, 50].filter((n) => n < total);
+  const [showCustom, setShowCustom] = useState(false);
+  const [custom, setCustom] = useState("");
+
+  const startCustom = () => {
+    const n = parseInt(custom, 10);
+    if (!n || n < 1) return;
+    onStart(Math.min(n, total));
+  };
+
+  return (
+    <div className="page">
+      <TopBar title="문제 풀기" onBack={onBack} />
+      <div className="setup-hero" style={{ background: c.soft }}>
+        <p className="setup-lead">몇 문제 풀까요?</p>
+        <p className="setup-sub" style={{ color: c.ink }}>이 방에서 낼 수 있는 문제 {total}개</p>
+      </div>
+      <div className="setup-grid">
+        {presets.map((n) => (
+          <button key={n} className="setup-btn" onClick={() => onStart(n)}>{n}문제</button>
+        ))}
+        <button className="setup-btn" onClick={() => onStart("all")}>전체 {total}문제</button>
+        <button className={"setup-btn" + (showCustom ? " on" : "")} onClick={() => setShowCustom((s) => !s)}>사용자 지정</button>
+      </div>
+      {showCustom && (
+        <div className="setup-custom">
+          <input className="input" type="number" min={1} max={total} value={custom}
+            placeholder={`1 ~ ${total} 사이`} onChange={(e) => setCustom(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && startCustom()} />
+          <button className="btn primary" onClick={startCustom}>시작</button>
+        </div>
+      )}
+      {wrongCount > 0 && (
+        <button className="btn ghost full" style={{ marginTop: 14 }} onClick={onStartWrong}>
+          <X size={16} /> 틀린 단어만 풀기 ({wrongCount}개)
+        </button>
+      )}
+    </div>
+  );
+}
+
 function QuizView({ room, onBack, onResult }) {
   const answerable = room.cards.filter((c) => c.front);
   const total = answerable.length;
-  const [limit, setLimit] = useState(null); // null=개수 미선택(설정 화면 표시)
+  const wrongCards = strugglingCards(room).filter((c) => c.front);
+  const [limit, setLimit] = useState(null);
   const [quiz, setQuiz] = useState([]);
   const [i, setI] = useState(0);
   const [picked, setPicked] = useState(null);
@@ -735,16 +895,21 @@ function QuizView({ room, onBack, onResult }) {
   const c = PALETTE[room.color] || PALETTE.yellow;
   const q = quiz[i];
 
-  const start = (n) => {
-    const count = n === "all" ? total : Math.min(n, total);
-    setLimit(count);
-    setQuiz(buildQuiz(room.cards, null, count));
+  const begin = (builtQuiz, lim) => {
+    setLimit(lim);
+    setQuiz(builtQuiz);
     setI(0); setPicked(null); setRevealed(false); setResults({}); setScore(0); setDone(false);
   };
+  const start = (n) => {
+    const count = n === "all" ? total : Math.min(n, total);
+    begin(buildQuiz(room.cards, null, count), count);
+  };
+  const startWrong = () => {
+    const ids = wrongCards.map((x) => x.id);
+    begin(buildQuiz(room.cards, ids, null), ids.length);
+  };
   const restart = (ids) => {
-    // 틀린 것만=그 세트 전부, 전체 다시=고른 개수 그대로
-    setQuiz(buildQuiz(room.cards, ids, ids ? null : limit));
-    setI(0); setPicked(null); setRevealed(false); setResults({}); setScore(0); setDone(false);
+    begin(buildQuiz(room.cards, ids, ids ? null : limit), ids ? ids.length : limit);
   };
 
   if (total === 0) {
@@ -757,9 +922,9 @@ function QuizView({ room, onBack, onResult }) {
     );
   }
 
-  // 개수 선택 화면
   if (limit === null) {
-    return <QuizSetup total={total} color={room.color} onBack={onBack} onStart={start} />;
+    return <QuizSetup total={total} wrongCount={wrongCards.length} color={room.color}
+      onBack={onBack} onStart={start} onStartWrong={startWrong} />;
   }
 
   const answer = (opt) => {
@@ -778,8 +943,9 @@ function QuizView({ room, onBack, onResult }) {
     if (i + 1 >= quiz.length) { onResult({ ...results }); setDone(true); }
     else { setI(i + 1); setPicked(null); setRevealed(false); }
   };
+
   if (done) {
-    const pct = Math.round((score / quiz.length) * 100);
+    const pct = quiz.length ? Math.round((score / quiz.length) * 100) : 0;
     const wrong = Object.entries(results).filter(([, v]) => v.wrong).map(([id]) => id);
     return (
       <div className="page">
@@ -861,46 +1027,6 @@ function QuizView({ room, onBack, onResult }) {
   );
 }
 
-function QuizSetup({ total, color, onBack, onStart }) {
-  const c = PALETTE[color] || PALETTE.yellow;
-  const presets = [10, 20, 50].filter((n) => n < total); // 전체보다 작은 것만 노출
-  const [showCustom, setShowCustom] = useState(false);
-  const [custom, setCustom] = useState("");
-
-  const startCustom = () => {
-    const n = parseInt(custom, 10);
-    if (!n || n < 1) return;
-    onStart(Math.min(n, total));
-  };
-
-  return (
-    <div className="page">
-      <TopBar title="문제 풀기" onBack={onBack} />
-      <div className="setup-hero" style={{ background: c.soft }}>
-        <p className="setup-lead">몇 문제 풀까요?</p>
-        <p className="setup-sub" style={{ color: c.ink }}>이 방에서 낼 수 있는 문제 {total}개</p>
-      </div>
-      <div className="setup-grid">
-        {presets.map((n) => (
-          <button key={n} className="setup-btn" onClick={() => onStart(n)}>{n}문제</button>
-        ))}
-        <button className="setup-btn" onClick={() => onStart("all")}>전체 {total}문제</button>
-        <button className={"setup-btn" + (showCustom ? " on" : "")} onClick={() => setShowCustom((s) => !s)}>
-          사용자 지정
-        </button>
-      </div>
-      {showCustom && (
-        <div className="setup-custom">
-          <input className="input" type="number" min={1} max={total} value={custom}
-            placeholder={`1 ~ ${total} 사이`} onChange={(e) => setCustom(e.target.value)}
-            onKeyDown={(e) => e.key === "Enter" && startCustom()} />
-          <button className="btn primary" onClick={startCustom}>시작</button>
-        </div>
-      )}
-    </div>
-  );
-}
-
 function SessionDone({ title, lines, color, onAgain, onBack, againLabel, hideBack }) {
   const c = PALETTE[color] || PALETTE.yellow;
   return (
@@ -919,15 +1045,21 @@ function SessionDone({ title, lines, color, onAgain, onBack, againLabel, hideBac
 }
 
 /* ------------------------------------------------------------------ */
-/*  Styles                                                             */
+/*  Styles (라이트 + 다크)                                             */
 /* ------------------------------------------------------------------ */
 const CSS = `
 @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Inter:wght@400;500;600&display=swap');
 * { box-sizing:border-box; margin:0; padding:0; }
 .app-root {
-  --paper:#F6F6F1; --ink:#17171F; --ink-soft:#6B6B76; --line:#E7E7DF; --card:#FFFFFF; --danger:#C6412B;
+  --paper:#F6F6F1; --card:#FFFFFF; --ink:#17171F; --ink-soft:#6B6B76; --line:#E7E7DF;
+  --danger:#C6412B; --pri-bg:#17171F; --pri-fg:#FFFFFF;
   min-height:100vh; background:var(--paper); color:var(--ink);
   font-family:'Inter',-apple-system,BlinkMacSystemFont,sans-serif; -webkit-font-smoothing:antialiased;
+  transition:background .2s ease, color .2s ease;
+}
+.app-root.dark {
+  --paper:#141419; --card:#20202A; --ink:#ECECEF; --ink-soft:#9A9AA6; --line:#31313C;
+  --danger:#FF6B52; --pri-bg:#ECECEF; --pri-fg:#161620;
 }
 .app-inner { max-width:560px; margin:0 auto; min-height:100vh; position:relative; }
 .page { padding:16px 18px 120px; }
@@ -937,25 +1069,31 @@ h1,h2,h3,.brand-mark,.hero-name,.done-title { font-family:'Space Grotesk',sans-s
 .pulse { color:var(--ink-soft); animation:pulse 1.2s ease-in-out infinite; font-size:15px; }
 @keyframes pulse { 0%,100%{opacity:.4} 50%{opacity:1} }
 
+/* theme toggle */
+.theme-toggle { width:36px; height:36px; display:inline-flex; align-items:center; justify-content:center; border-radius:10px; border:1px solid var(--line); background:var(--card); color:var(--ink); cursor:pointer; }
+.theme-toggle:hover { border-color:var(--ink-soft); }
+.auth-toggle { position:absolute; top:18px; right:18px; }
+
 .auth-wrap { min-height:100vh; display:flex; flex-direction:column; justify-content:center; padding:24px 20px; }
 .auth-head { text-align:center; margin-bottom:26px; }
 .auth-lead { margin-top:12px; font-size:14.5px; color:var(--ink-soft); }
-.auth-card { background:#fff; border:1px solid var(--line); border-radius:20px; padding:20px; }
+.auth-card { background:var(--card); border:1px solid var(--line); border-radius:20px; padding:20px; }
 .auth-tabs { display:flex; gap:6px; background:var(--paper); border-radius:12px; padding:4px; margin-bottom:18px; }
 .auth-tab { flex:1; border:none; background:transparent; padding:9px; border-radius:9px; font-size:14px; font-weight:600; color:var(--ink-soft); cursor:pointer; font-family:inherit; }
-.auth-tab.on { background:#fff; color:var(--ink); box-shadow:0 1px 4px rgba(0,0,0,.06); }
-.auth-field { display:flex; align-items:center; gap:10px; border:1px solid var(--line); border-radius:12px; padding:0 13px; margin-bottom:11px; color:var(--ink-soft); }
+.auth-tab.on { background:var(--card); color:var(--ink); box-shadow:0 1px 4px rgba(0,0,0,.12); }
+.auth-field { display:flex; align-items:center; gap:10px; border:1px solid var(--line); border-radius:12px; padding:0 13px; margin-bottom:11px; color:var(--ink-soft); background:var(--card); }
 .auth-field:focus-within { border-color:var(--ink); color:var(--ink); }
 .auth-input { flex:1; border:none; outline:none; background:transparent; padding:13px 0; font-size:15px; font-family:inherit; color:var(--ink); }
 .auth-err { color:var(--danger); font-size:13px; margin:2px 2px 12px; }
 
 .masthead { padding:14px 0 20px; }
 .masthead-top { display:flex; align-items:center; justify-content:space-between; }
-.brand-mark { font-size:30px; font-weight:700; letter-spacing:-0.03em; background:linear-gradient(100deg,rgba(0,0,0,0) 0.5%,#FFE58A 1.6%,#FFE58A 90%,rgba(0,0,0,0) 97%); padding:0 .18em; border-radius:.35em; }
-.signout { display:inline-flex; align-items:center; gap:5px; background:#fff; border:1px solid var(--line); border-radius:10px; padding:7px 11px; font-size:13px; font-weight:500; color:var(--ink-soft); cursor:pointer; font-family:inherit; }
+.masthead-actions { display:flex; align-items:center; gap:8px; }
+.brand-mark { font-size:30px; font-weight:700; letter-spacing:-0.03em; color:#1A1A22; background:linear-gradient(100deg,rgba(0,0,0,0) 0.5%,#FFE58A 1.6%,#FFE58A 90%,rgba(0,0,0,0) 97%); padding:0 .18em; border-radius:.35em; }
+.signout { display:inline-flex; align-items:center; gap:5px; background:var(--card); border:1px solid var(--line); border-radius:10px; padding:7px 11px; font-size:13px; font-weight:500; color:var(--ink-soft); cursor:pointer; font-family:inherit; }
 .signout:hover { color:var(--ink); border-color:var(--ink-soft); }
 .tagline { margin-top:14px; font-size:16px; line-height:1.55; max-width:22em; }
-.hl { border-radius:.35em; padding:0 .1em; -webkit-box-decoration-break:clone; box-decoration-break:clone; }
+.hl { border-radius:.35em; padding:0 .1em; color:#1A1A22; -webkit-box-decoration-break:clone; box-decoration-break:clone; }
 
 .row-between { display:flex; align-items:center; justify-content:space-between; margin:8px 0 14px; }
 .row-between.tight { margin:20px 0 10px; }
@@ -963,18 +1101,19 @@ h1,h2,h3,.brand-mark,.hero-name,.done-title { font-family:'Space Grotesk',sans-s
 .section-title.sm { font-size:16px; }
 .count { color:var(--ink-soft); font-weight:500; font-family:'Space Grotesk'; }
 .link-btn { display:inline-flex; align-items:center; gap:5px; background:none; border:none; color:var(--ink); font-size:14px; font-weight:500; cursor:pointer; padding:6px 4px; font-family:inherit; }
-.link-btn:hover { color:#000; }
+.link-btn:hover { opacity:.7; }
 
 .grid { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
 .room-card { text-align:left; background:var(--card); border:1px solid var(--line); border-radius:16px; overflow:hidden; cursor:pointer; font-family:inherit; color:inherit; padding:0; transition:transform .12s ease, box-shadow .12s ease; display:flex; flex-direction:column; }
-.room-card:hover { transform:translateY(-2px); box-shadow:0 6px 20px rgba(0,0,0,.06); }
+.room-card:hover { transform:translateY(-2px); box-shadow:0 6px 20px rgba(0,0,0,.10); }
 .room-card.static, .room-card.static:hover { cursor:default; transform:none; box-shadow:none; }
 .room-swatch { height:8px; width:100%; }
 .room-body { padding:13px 14px 15px; display:flex; flex-direction:column; gap:6px; flex:1; }
 .room-subject { font-size:11px; font-weight:600; text-transform:uppercase; letter-spacing:.04em; }
 .room-name { font-size:15.5px; font-weight:600; line-height:1.3; letter-spacing:-0.01em; }
-.room-meta { display:flex; align-items:center; gap:5px; font-size:12.5px; color:var(--ink-soft); font-family:'Space Grotesk'; }
+.room-meta { display:flex; align-items:center; gap:5px; font-size:12.5px; color:var(--ink-soft); font-family:'Space Grotesk'; flex-wrap:wrap; }
 .room-meta .dot { opacity:.5; }
+.meta-wrong { color:var(--danger); font-weight:600; }
 .room-card.add { align-items:center; justify-content:center; gap:8px; color:var(--ink-soft); border-style:dashed; background:transparent; min-height:120px; flex-direction:column; font-weight:500; }
 .room-card.add:hover { color:var(--ink); border-color:var(--ink-soft); }
 .prog { height:6px; background:var(--line); border-radius:99px; overflow:hidden; margin-top:2px; }
@@ -985,11 +1124,11 @@ h1,h2,h3,.brand-mark,.hero-name,.done-title { font-family:'Space Grotesk',sans-s
 .empty-sub { font-size:14px; max-width:24em; line-height:1.5; }
 .empty-actions { display:flex; gap:10px; margin-top:16px; flex-wrap:wrap; justify-content:center; }
 
-.btn { display:inline-flex; align-items:center; justify-content:center; gap:7px; border-radius:12px; padding:11px 16px; font-size:14.5px; font-weight:600; cursor:pointer; border:1px solid transparent; font-family:inherit; transition:background .12s ease, transform .1s ease; }
+.btn { display:inline-flex; align-items:center; justify-content:center; gap:7px; border-radius:12px; padding:11px 16px; font-size:14.5px; font-weight:600; cursor:pointer; border:1px solid transparent; font-family:inherit; transition:background .12s ease, transform .1s ease, opacity .12s ease; }
 .btn:active { transform:scale(.98); }
-.btn.primary { background:var(--ink); color:#fff; }
-.btn.primary:hover { background:#000; }
-.btn.ghost { background:#fff; border-color:var(--line); color:var(--ink); }
+.btn.primary { background:var(--pri-bg); color:var(--pri-fg); }
+.btn.primary:hover { opacity:.88; }
+.btn.ghost { background:var(--card); border-color:var(--line); color:var(--ink); }
 .btn.ghost:hover { border-color:var(--ink-soft); }
 .btn.danger { background:var(--danger); color:#fff; }
 .btn.small { padding:8px 12px; font-size:13px; border-radius:10px; }
@@ -1001,19 +1140,25 @@ h1,h2,h3,.brand-mark,.hero-name,.done-title { font-family:'Space Grotesk',sans-s
 .topbar-title { flex:1; text-align:center; font-size:15px; font-weight:600; font-family:'Space Grotesk'; }
 .topbar-right { display:flex; gap:4px; min-width:32px; justify-content:flex-end; }
 .icon-btn { width:38px; height:38px; display:inline-flex; align-items:center; justify-content:center; border-radius:11px; border:none; background:transparent; color:var(--ink); cursor:pointer; }
-.icon-btn:hover { background:rgba(0,0,0,.05); }
+.icon-btn.sm { width:30px; height:30px; }
+.icon-btn:hover { background:rgba(125,125,125,.14); }
 .page-lead { font-size:14.5px; color:var(--ink-soft); line-height:1.55; margin-bottom:18px; }
 
 .field { margin-bottom:16px; }
 .field label { display:block; font-size:13px; font-weight:600; color:var(--ink-soft); margin-bottom:7px; }
-.input { width:100%; padding:12px 13px; border:1px solid var(--line); border-radius:12px; font-size:15px; font-family:inherit; background:#fff; color:var(--ink); outline:none; }
+.input { width:100%; padding:12px 13px; border:1px solid var(--line); border-radius:12px; font-size:15px; font-family:inherit; background:var(--card); color:var(--ink); outline:none; }
 .input:focus { border-color:var(--ink); }
 .input.flat { border:none; border-radius:0; padding:10px 12px; background:transparent; }
 .swatches { display:flex; gap:9px; flex-wrap:wrap; }
 .swatch { width:36px; height:36px; border-radius:10px; border:2px solid transparent; cursor:pointer; }
 .swatch.on { border-color:var(--ink); transform:scale(1.06); }
 
-.import-box { border:1px solid var(--line); border-radius:14px; padding:14px; background:#fff; margin-bottom:18px; }
+.search-field { display:flex; align-items:center; gap:8px; border:1px solid var(--line); border-radius:12px; padding:0 12px; margin-bottom:10px; color:var(--ink-soft); background:var(--card); }
+.search-field:focus-within { border-color:var(--ink); }
+.search-input { flex:1; border:none; outline:none; background:transparent; padding:11px 0; font-size:14.5px; font-family:inherit; color:var(--ink); }
+.search-count { font-size:12.5px; color:var(--ink-soft); margin:2px 2px 10px; }
+
+.import-box { border:1px solid var(--line); border-radius:14px; padding:14px; background:var(--card); margin-bottom:18px; }
 .import-head { display:flex; gap:11px; align-items:flex-start; }
 .import-title { font-size:14.5px; font-weight:600; }
 .import-sub { font-size:12.5px; color:var(--ink-soft); margin-top:2px; }
@@ -1021,64 +1166,71 @@ h1,h2,h3,.brand-mark,.hero-name,.done-title { font-family:'Space Grotesk',sans-s
 .check input { width:16px; height:16px; accent-color:var(--ink); }
 
 .card-list { display:flex; flex-direction:column; gap:9px; }
-.edit-card { display:flex; align-items:center; gap:6px; background:#fff; border:1px solid var(--line); border-radius:12px; padding:4px 6px 4px 10px; }
-.edit-idx { font-family:'Space Grotesk'; font-size:12px; color:var(--ink-soft); width:16px; text-align:center; flex-shrink:0; }
+.edit-card { display:flex; align-items:center; gap:6px; background:var(--card); border:1px solid var(--line); border-radius:12px; padding:4px 6px 4px 10px; border-left-width:3px; }
+.edit-card.wrong { border-left-color:#E8896B; }
+.edit-card.mastered { border-left-color:#5FC79A; }
+.edit-idx { font-family:'Space Grotesk'; font-size:12px; color:var(--ink-soft); width:20px; text-align:center; flex-shrink:0; }
 .edit-fields { flex:1; display:flex; flex-direction:column; }
 .edit-divider { height:1px; background:var(--line); margin:0 8px; }
 
 .sticky-actions { position:sticky; bottom:0; display:flex; gap:10px; padding:14px 0 6px; margin-top:20px; background:linear-gradient(to top,var(--paper) 70%,transparent); }
 
-.room-hero { border-radius:20px; padding:22px 20px; margin-bottom:20px; }
+.room-hero { border-radius:20px; padding:22px 20px; margin-bottom:20px; color:#1C1C24; }
 .hero-subject { font-size:12px; font-weight:700; text-transform:uppercase; letter-spacing:.05em; }
 .hero-name { font-size:25px; font-weight:700; letter-spacing:-0.03em; line-height:1.15; margin:8px 0 16px; }
 .hero-stats { display:flex; gap:26px; margin-bottom:14px; }
 .hero-stats div { display:flex; flex-direction:column; }
 .hero-stats strong { font-family:'Space Grotesk'; font-size:24px; font-weight:600; letter-spacing:-0.02em; }
-.hero-stats span { font-size:12px; color:var(--ink-soft); }
+.hero-stats span { font-size:12px; color:#5B5B63; }
 .study-actions { display:grid; grid-template-columns:1fr 1fr; gap:12px; margin-bottom:14px; }
-.study-btn { display:flex; flex-direction:column; align-items:flex-start; gap:12px; text-align:left; background:#fff; border:1.5px solid var(--line); border-radius:16px; padding:16px 15px; cursor:pointer; font-family:inherit; color:var(--ink); transition:transform .12s ease; }
+.study-btn { display:flex; flex-direction:column; align-items:flex-start; gap:12px; text-align:left; background:var(--card); border:1.5px solid var(--line); border-radius:16px; padding:16px 15px; cursor:pointer; font-family:inherit; color:var(--ink); transition:transform .12s ease; }
 .study-btn:hover { transform:translateY(-2px); }
 .study-btn strong { display:block; font-size:15px; font-weight:600; }
 .study-btn span { font-size:12.5px; color:var(--ink-soft); }
 .room-tools { display:flex; flex-wrap:wrap; gap:8px; }
-.tool { display:inline-flex; align-items:center; gap:6px; background:#fff; border:1px solid var(--line); border-radius:10px; padding:9px 12px; font-size:13px; font-weight:500; color:var(--ink); cursor:pointer; font-family:inherit; }
+.tool { display:inline-flex; align-items:center; gap:6px; background:var(--card); border:1px solid var(--line); border-radius:10px; padding:9px 12px; font-size:13px; font-weight:500; color:var(--ink); cursor:pointer; font-family:inherit; }
 .tool:hover { border-color:var(--ink-soft); }
 .tool.danger { color:var(--danger); }
-.confirm { margin-top:18px; padding:16px; border:1px solid var(--line); border-radius:14px; background:#fff; }
+.confirm { margin-top:18px; padding:16px; border:1px solid var(--line); border-radius:14px; background:var(--card); }
 .confirm p { font-size:14.5px; margin-bottom:14px; }
 .confirm-actions { display:flex; gap:10px; justify-content:flex-end; }
 
-.flash-stage { perspective:1400px; margin:12px 0 20px; cursor:pointer; }
-.flashcard { position:relative; width:100%; min-height:340px; transform-style:preserve-3d; transition:transform .5s cubic-bezier(.2,.8,.25,1); }
-.flashcard.flipped { transform:rotateY(180deg); }
-.face { position:absolute; inset:0; backface-visibility:hidden; -webkit-backface-visibility:hidden; border:1px solid var(--line); border-radius:22px; padding:28px 24px; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:16px; box-shadow:0 4px 24px rgba(0,0,0,.05); overflow:auto; }
-.face.back { transform:rotateY(180deg); }
-.face-tag { font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:.08em; color:var(--ink-soft); }
-.face-text { font-family:'Space Grotesk',sans-serif; font-size:24px; font-weight:600; line-height:1.35; text-align:center; letter-spacing:-0.02em; word-break:keep-all; }
-.tap-hint { position:absolute; bottom:16px; font-size:11.5px; color:var(--ink-soft); }
-.flash-controls { display:flex; gap:12px; }
-.grade { flex:1; display:inline-flex; align-items:center; justify-content:center; gap:7px; padding:15px; border-radius:14px; font-size:15px; font-weight:600; cursor:pointer; border:1.5px solid var(--line); background:#fff; font-family:inherit; transition:transform .1s ease; }
-.grade:active { transform:scale(.97); }
-.grade.right { color:#0F7A52; border-color:#A8E9CC; }
-.grade.right:hover { background:#E6F8F0; }
-.grade.wrong { color:#B23F17; border-color:#FFC2A6; }
-.grade.wrong:hover { background:#FFECE1; }
-
-.setup-hero { border-radius:20px; padding:26px 20px; margin-bottom:18px; text-align:center; }
+/* start screen (flash + quiz) */
+.setup-hero { border-radius:20px; padding:26px 20px; margin-bottom:18px; text-align:center; color:#1C1C24; }
 .setup-lead { font-family:'Space Grotesk'; font-size:22px; font-weight:700; letter-spacing:-0.02em; }
 .setup-sub { font-size:13.5px; margin-top:8px; font-weight:600; }
 .setup-grid { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
-.setup-btn { background:#fff; border:1.5px solid var(--line); border-radius:14px; padding:18px 12px; font-size:16px; font-weight:600; font-family:'Space Grotesk'; color:var(--ink); cursor:pointer; transition:transform .1s ease, border-color .12s ease; }
+.setup-btn { background:var(--card); border:1.5px solid var(--line); border-radius:14px; padding:18px 12px; font-size:16px; font-weight:600; font-family:'Space Grotesk'; color:var(--ink); cursor:pointer; transition:transform .1s ease, border-color .12s ease; }
 .setup-btn:hover { transform:translateY(-2px); border-color:var(--ink-soft); }
 .setup-btn.on { border-color:var(--ink); }
 .setup-custom { display:flex; gap:10px; margin-top:12px; }
 .setup-custom .input { flex:1; }
+.setup-list { display:flex; flex-direction:column; gap:10px; }
+.setup-row { display:flex; align-items:center; gap:13px; text-align:left; width:100%; background:var(--card); border:1.5px solid var(--line); border-radius:14px; padding:15px 16px; cursor:pointer; font-family:inherit; color:var(--ink); transition:transform .1s ease, border-color .12s ease; }
+.setup-row:hover { transform:translateY(-2px); border-color:var(--ink-soft); }
+.setup-row strong { display:block; font-size:15px; font-weight:600; font-family:'Space Grotesk'; }
+.setup-row span { font-size:12.5px; color:var(--ink-soft); }
+
+.flash-stage { perspective:1400px; margin:12px 0 20px; cursor:pointer; }
+.flashcard { position:relative; width:100%; min-height:340px; transform-style:preserve-3d; transition:transform .5s cubic-bezier(.2,.8,.25,1); }
+.flashcard.flipped { transform:rotateY(180deg); }
+.face { position:absolute; inset:0; backface-visibility:hidden; -webkit-backface-visibility:hidden; border:1px solid var(--line); border-radius:22px; padding:28px 24px; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:16px; box-shadow:0 4px 24px rgba(0,0,0,.08); overflow:auto; background:#FFFFFF; color:#1C1C24; }
+.face.back { transform:rotateY(180deg); }
+.face-tag { font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:.08em; color:#8B8B93; }
+.face-text { font-family:'Space Grotesk',sans-serif; font-size:24px; font-weight:600; line-height:1.35; text-align:center; letter-spacing:-0.02em; word-break:keep-all; }
+.tap-hint { position:absolute; bottom:16px; font-size:11.5px; color:#9A9AA2; }
+.flash-controls { display:flex; gap:12px; }
+.grade { flex:1; display:inline-flex; align-items:center; justify-content:center; gap:7px; padding:15px; border-radius:14px; font-size:15px; font-weight:600; cursor:pointer; border:1.5px solid var(--line); background:var(--card); font-family:inherit; transition:transform .1s ease; }
+.grade:active { transform:scale(.97); }
+.grade.right { color:#0F7A52; border-color:#A8E9CC; }
+.grade.wrong { color:#B23F17; border-color:#FFC2A6; }
+
 .quiz-progress { height:6px; background:var(--line); border-radius:99px; overflow:hidden; margin:4px 0 20px; }
 .quiz-progress-fill { height:100%; transition:width .3s ease; }
-.quiz-q { background:#fff; border:1px solid var(--line); border-radius:18px; padding:24px 20px; margin-bottom:16px; text-align:center; }
+.quiz-q { background:var(--card); border:1px solid var(--line); border-radius:18px; padding:24px 20px; margin-bottom:16px; text-align:center; }
 .quiz-q-text { font-family:'Space Grotesk'; font-size:21px; font-weight:600; line-height:1.4; letter-spacing:-0.02em; margin-top:10px; word-break:keep-all; }
 .options { display:flex; flex-direction:column; gap:10px; }
-.option { display:flex; align-items:center; gap:12px; text-align:left; width:100%; background:#fff; border:1.5px solid var(--line); border-radius:14px; padding:14px 15px; font-size:15px; cursor:pointer; font-family:inherit; color:var(--ink); transition:border-color .12s ease, background .12s ease; }
+.option { display:flex; align-items:center; gap:12px; text-align:left; width:100%; background:var(--card); border:1.5px solid var(--line); border-radius:14px; padding:14px 15px; font-size:15px; cursor:pointer; font-family:inherit; color:var(--ink); transition:border-color .12s ease, background .12s ease; }
 .option:hover:not(:disabled) { border-color:var(--ink-soft); }
 .opt-key { font-family:'Space Grotesk'; font-weight:600; font-size:13px; color:var(--ink-soft); width:24px; height:24px; border-radius:7px; background:var(--paper); display:inline-flex; align-items:center; justify-content:center; flex-shrink:0; }
 .opt-text { flex:1; line-height:1.4; word-break:keep-all; }
@@ -1089,17 +1241,16 @@ h1,h2,h3,.brand-mark,.hero-name,.done-title { font-family:'Space Grotesk',sans-s
 .option.wrong .opt-key { background:#FFC2A6; color:#B23F17; }
 .option.dim { opacity:.5; }
 .selfgrade { display:flex; flex-direction:column; gap:14px; }
-.reveal { border-radius:16px; padding:22px; display:flex; flex-direction:column; align-items:center; gap:10px; }
+.reveal { border-radius:16px; padding:22px; display:flex; flex-direction:column; align-items:center; gap:10px; color:#1C1C24; }
 
-.done { border-radius:22px; padding:40px 24px; text-align:center; display:flex; flex-direction:column; align-items:center; margin-top:12px; }
-.done-badge { width:64px; height:64px; border-radius:50%; display:flex; align-items:center; justify-content:center; color:var(--ink); margin-bottom:18px; }
+.done { border-radius:22px; padding:40px 24px; text-align:center; display:flex; flex-direction:column; align-items:center; margin-top:12px; color:#1C1C24; }
+.done-badge { width:64px; height:64px; border-radius:50%; display:flex; align-items:center; justify-content:center; color:#1C1C24; margin-bottom:18px; }
 .done-title { font-size:26px; font-weight:700; letter-spacing:-0.03em; }
 .done-line { font-size:16px; margin-top:12px; line-height:1.6; }
 .done-actions { display:flex; gap:10px; margin-top:26px; flex-wrap:wrap; justify-content:center; }
 
-.toast { position:fixed; bottom:26px; left:50%; transform:translateX(-50%); background:var(--ink); color:#fff; padding:11px 18px; border-radius:12px; font-size:14px; font-weight:500; z-index:50; box-shadow:0 8px 30px rgba(0,0,0,.2); max-width:90%; animation:rise .25s ease; }
+.toast { position:fixed; bottom:26px; left:50%; transform:translateX(-50%); background:#2A2A33; color:#fff; padding:11px 18px; border-radius:12px; font-size:14px; font-weight:500; z-index:50; box-shadow:0 8px 30px rgba(0,0,0,.3); max-width:90%; animation:rise .25s ease; }
 @keyframes rise { from{opacity:0;transform:translate(-50%,8px)} to{opacity:1;transform:translate(-50%,0)} }
 .warn { display:flex; align-items:center; gap:7px; justify-content:center; font-size:12.5px; color:#8a5a00; background:#FFF8E1; padding:8px; }
-@media (max-width:380px){ .grid { grid-template-columns:1fr; } }
+@media (max-width:380px){ .grid, .setup-grid { grid-template-columns:1fr; } }
 `;
- 
